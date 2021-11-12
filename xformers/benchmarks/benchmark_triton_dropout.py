@@ -18,8 +18,8 @@ SHAPES = [
     (8, 512, 1024),
     (4, 1024, 1024),
     (2, 2048, 2048),
-    (2, 4096, 4096),
     (1, 2048, 12288),
+    (2, 4096, 4096),
 ]
 
 P = 0.1
@@ -105,7 +105,7 @@ def bench_dropout(bias: bool, backward: bool, activation: Optional[Activation]):
         )
 
 
-for activation in [Activation.GeLU, None]:
+for activation in [Activation.SquaredReLU, Activation.GeLU, None]:
     for bw in [True, False]:
         for bias in [True, False]:
             bench_dropout(bias, bw, activation)

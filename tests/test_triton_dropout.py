@@ -25,7 +25,7 @@ if _triton_available:
         )
         _triton_available = False
 
-# Testing odd shapes on purpose
+# Testing odd (non-power-of-two for instance) shapes on purpose
 SHAPES = [
     (384, 128),
     (8, 384, 128),
@@ -90,6 +90,10 @@ def test_dropout(shape, amp, bias):
             == y.shape[1]
         )
 
+        # Check that the drop probability is about right
+        drop_p = (y_a.numel() - y_a.count_nonzero()) / y_a.numel()
+        assert drop_p < 0.55 and drop_p > 0.45
+
 
 @pytest.mark.skipif(not _triton_available, reason="Triton is not available")
 @pytest.mark.skipif(
@@ -100,7 +104,7 @@ def test_dropout(shape, amp, bias):
 @pytest.mark.parametrize("amp", [False, True])
 @pytest.mark.parametrize("bias", [True, False])
 @pytest.mark.parametrize("activation", [a.value for a in Activation])
-@pytest.mark.parametrize("p", [0, 0.001, 0.5])
+@pytest.mark.parametrize("p", [0, 0.01, 0.5])
 def test_dropout_parity(shape, amp, bias, activation, p):
     """
     Check some basic dropout properties
@@ -151,4 +155,4 @@ def test_dropout_parity(shape, amp, bias, activation, p):
             if bias:
                 assert torch.allclose(
                     torch.norm(b.grad), torch.norm(b_.grad), rtol=0.01
-                ), f"{b.grad}\n{b_.grad}"
+                ), f"{b.grad.norm()}\n{b_.grad.norm()}"
