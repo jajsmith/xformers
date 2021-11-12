@@ -4,13 +4,30 @@
 # LICENSE file in the root directory of this source tree.
 
 
+import pytest
 import torch
+
+SHAPES = [
+    (384, 128),
+    (34, 128),
+    (8, 128),
+    (8, 512),
+    (4, 384),
+    (4, 1024),
+    (2, 2048),
+    (2, 4096),
+    (2, 4096),
+    (1, 12288),
+]
+
 
 _triton_available = torch.cuda.is_available()
 if _triton_available:
     try:
         import triton
         import triton.language as tl
+
+        from xformers.triton.sum_strided import sum_2d_dim_0
 
     except (ImportError, ModuleNotFoundError):
         _triton_available = False
@@ -39,7 +56,7 @@ if _triton_available:
         # Compute variance
         x_mean = tl.sum(x, axis=0) / N
         x_zm = x - x_mean
-        x_zm = tl.where(cols < N, x_zm, 0.0)  # THIS SHOULD NOT BE NEEDED
+        x_zm = tl.where(cols < N, x_zm, 0.0)
         x_var = tl.sum(x_zm * x_zm, axis=0) / N
         tl.store(Mean + row, x_mean)
         tl.store(Var + row, x_var)
@@ -88,3 +105,26 @@ if _triton_available:
 
         assert torch.allclose(mean, t_mean, rtol=1e-1)
         assert torch.allclose(var, t_var, rtol=1e-1)
+
+    @pytest.mark.parametrize("shape", SHAPES)
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
+    def test_sum_strided(shape, dtype):
+        torch.random.manual_seed(0)
+        a = torch.rand(shape, device=torch.device("cuda"), dtype=dtype)
+
+        torch_sum = torch.sum(a, dim=0)
+        triton_sum = sum_2d_dim_0(a)
+        assert torch.allclose(torch_sum, triton_sum)
+
+    def test_sum_strided_asserts():
+        torch.random.manual_seed(0)
+        a = torch.rand((128, 256), device=torch.device("cuda"), dtype=torch.float16)
+
+        with pytest.raises(AssertionError):
+            # This kernel is not useful in that case, assert to prevent misuse
+            sum_2d_dim_0(a.transpose(1, 0))
+
+        a = torch.rand((3, 128, 256), device=torch.device("cuda"), dtype=torch.float16)
+        with pytest.raises(AssertionError):
+            # This kernel expects 2D tensors, assert to prevent misuse
+            sum_2d_dim_0(a)

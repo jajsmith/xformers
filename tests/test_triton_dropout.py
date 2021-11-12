@@ -25,7 +25,7 @@ if _triton_available:
         )
         _triton_available = False
 
-# Testing odd shapes on purpose
+# Testing odd (non-power-of-two for instance) shapes on purpose
 SHAPES = [
     (384, 128),
     (8, 384, 128),
