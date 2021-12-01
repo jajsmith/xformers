@@ -30,9 +30,19 @@ def sum_2d_dim_0(x: torch.Tensor):
         " You would probably be better served with torch.sum()"
     )
 
-    def grid(meta):
-        return (triton.cdiv(x.shape[1], meta["BLOCK_N"]),)
+    # Manually handle the scheduling
+    M, N = x.shape
 
-    k_sum_0[grid](out, x, x.stride(0), x.shape[0], x.shape[1])
+    def grid(meta):
+        return (triton.cdiv(N, meta["BLOCK_N"]),)
+
+    # fmt: off
+    k_sum_0[grid](
+        out, x,
+        x.stride(0),
+        M, N,
+        x.dtype == torch.float16
+    )
+    # fmt: on
 
     return out

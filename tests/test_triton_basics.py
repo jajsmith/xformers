@@ -9,6 +9,7 @@ import torch
 
 SHAPES = [
     (384, 128),
+    (8 * 384, 128),
     (34, 128),
     (16, 128),
     (16, 512),
@@ -114,7 +115,9 @@ if _triton_available:
 
         torch_sum = torch.sum(a, dim=0)
         triton_sum = sum_2d_dim_0(a)
-        assert torch.allclose(torch_sum, triton_sum)
+        assert torch.allclose(
+            torch_sum, triton_sum, rtol=0.01
+        ), f"{torch_sum}\n{triton_sum}"
 
     def test_sum_strided_asserts():
         torch.random.manual_seed(0)

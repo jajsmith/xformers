@@ -10,49 +10,56 @@ import triton.language as tl
 # fmt: off
 @triton.autotune(
     configs=[
-        triton.Config({"BLOCK_N": 4}, num_warps=1),
-        triton.Config({"BLOCK_N": 4}, num_warps=4),
-        triton.Config({"BLOCK_N": 8}, num_warps=2),
-        triton.Config({"BLOCK_N": 8}, num_warps=4),
-        triton.Config({"BLOCK_N": 16}, num_warps=4),
-        triton.Config({"BLOCK_N": 32}, num_warps=8),
-        triton.Config({"BLOCK_N": 64}, num_warps=16),
-        triton.Config({"BLOCK_N": 64}, num_warps=16),
+        triton.Config({"BLOCK_M": 32, "BLOCK_N": 16}, num_stages=5, num_warps=1),
+        triton.Config({"BLOCK_M": 64, "BLOCK_N": 16}, num_stages=5, num_warps=2),
+        triton.Config({"BLOCK_M": 128, "BLOCK_N": 16}, num_stages=5, num_warps=2),
+        triton.Config({"BLOCK_M": 256, "BLOCK_N": 16}, num_stages=5, num_warps=2),
+        triton.Config({"BLOCK_M": 512, "BLOCK_N": 16}, num_stages=5, num_warps=2),
+        triton.Config({"BLOCK_M": 1024, "BLOCK_N": 16}, num_stages=5, num_warps=4),
+        triton.Config({"BLOCK_M": 2048, "BLOCK_N": 16}, num_stages=5, num_warps=4),
     ],
-    key=["M", "N"],
-)
-@triton.heuristics(
-    values={"BLOCK_SIZE": lambda *args, **_: triton.next_power_of_2(args[-2])}
+    key=["M", "N", "is_fp16"],
 )
 @triton.jit
 def k_sum_0(
-    Y,
-    X,
+    Y, X,
     stride_xm,
-    M,
-    N,
-    **meta,  # extra parameters which can be automatically filled in given some heuristics
+    M, N,
+    is_fp16,  # useful for autotune
+    **meta,
 ):
     # fmt: om
 
     """
-    Sum a 2d tensor over the first (strided) dimension
+    Sum a 2d tensor over the first (strided) dimension.
+    This extracts some speed through a parallel sum across the second dimension
     """
+    BLOCK_M = meta["BLOCK_M"]
+    BLOCK_N = meta["BLOCK_N"]
 
-    # row indices. We'll reduce over this dimension
-    m = tl.arange(0, meta["BLOCK_SIZE"])
+    # partial row indices. We'll reduce over this dimension
+    m = tl.arange(0, BLOCK_M)
 
-    # To get some extra parallelization, we can try to handle several columns in the same thread block
-    n = tl.program_id(0)
-    rn = n * meta["BLOCK_N"] + tl.arange(0, meta["BLOCK_N"])
+    # To get some extra parallelization, we handle several columns in the same thread block
+    rn = tl.program_id(axis=0) * BLOCK_N + tl.arange(0, BLOCK_N)
 
     # the memory address of all the elements that we want to load can be computed as follows
     x_ptrs = X + m[:, None] * stride_xm + rn[None, :]
+    x_sum = tl.zeros((BLOCK_N,), dtype=tl.float32)
 
-    # load input data; pad out-of-bounds elements with 0
-    # NOTE: make sure to accumulate in fp32 to prevent a trivial overflow
-    mask = (m[:, None] < M) & (rn[None, :] < N)
-    x = tl.load(x_ptrs, mask=mask, other=0.0).to(tl.float32)
-    x = tl.where(mask, x, 0.0)
-    x_sum = tl.sum(x, 0)
+    tiles = M // BLOCK_M
+    if M % BLOCK_M > 0:
+        tiles += 1
+
+    for _ in range(tiles):
+        # load input data; pad out-of-bounds elements with 0
+        # NOTE: make sure to accumulate in fp32 to prevent a trivial overflow
+        mask = (m[:, None] < M) & (rn[None, :] < N)
+        x = tl.load(x_ptrs, mask=mask, other=0.0)
+        x_sum += tl.sum(x, 0)
+
+        # move the load pointer
+        x_ptrs += BLOCK_M * stride_xm
+        m += BLOCK_M  # update the mask check
+
     tl.store(Y + rn, x_sum, mask=rn < N)

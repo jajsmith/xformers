@@ -151,4 +151,4 @@ def test_dropout_parity(shape, amp, bias, activation, p):
             if bias:
                 assert torch.allclose(
                     torch.norm(b.grad), torch.norm(b_.grad), rtol=0.01
-                ), f"{b.grad}\n{b_.grad}"
+                ), f"{b.grad.norm()}\n{b_.grad.norm()}"

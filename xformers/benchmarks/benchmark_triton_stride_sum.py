@@ -18,7 +18,6 @@ SHAPES = [
     (1024, 768),
     (2048, 1024),
     (4096, 4096),
-    (2048, 12288),
 ]
 
 
@@ -49,12 +48,14 @@ def bench_functions(
 
                 results[key][testcase.name] = f"{metric:.1f}"
 
+        _type = " fp16" if dtype == torch.float16 else " fp32"
+
         pretty_print(
             results,
-            title=" ------------- Type: {} ------------- ".format(dtype),
+            title=" ------------- Type: {} ------------- ".format(_type),
             units=unit,
         )
-        _type = " fp16" if dtype == torch.float16 else " fp32"
+
         pretty_plot(results, title + _type, unit, dash_key="pytorch")
 
 
