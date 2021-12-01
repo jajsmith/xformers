@@ -21,6 +21,10 @@ def sum_2d_dim_0(x: torch.Tensor):
         x.ndim == 2
     ), "This is a very specific kernel, only for 2-dim tensors and summing along dim 0"
 
+    assert (
+        x.shape[0] >= 4
+    ), "This is a very specific kernel, requires the reduction dimension to be bigger than 4"
+
     assert x.stride(1) == 1, (
         "We're expecting x to be contiguous along dim 1, and non contiguous along dim 0.\n"
         " You would probably be better served with torch.sum()"

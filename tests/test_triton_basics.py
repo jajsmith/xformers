@@ -10,14 +10,14 @@ import torch
 SHAPES = [
     (384, 128),
     (34, 128),
-    (8, 128),
-    (8, 512),
-    (4, 384),
-    (4, 1024),
-    (2, 2048),
-    (2, 4096),
-    (2, 4096),
-    (1, 12288),
+    (16, 128),
+    (16, 512),
+    (8, 384),
+    (8, 1024),
+    (8, 2048),
+    (8, 4096),
+    (8, 4096),
+    (4, 12288),
 ]
 
 
@@ -127,4 +127,9 @@ if _triton_available:
         a = torch.rand((3, 128, 256), device=torch.device("cuda"), dtype=torch.float16)
         with pytest.raises(AssertionError):
             # This kernel expects 2D tensors, assert to prevent misuse
+            sum_2d_dim_0(a)
+
+        a = torch.rand((2, 128), device=torch.device("cuda"), dtype=torch.float16)
+        with pytest.raises(AssertionError):
+            # This kernel cannot sum over dimensions < 4
             sum_2d_dim_0(a)

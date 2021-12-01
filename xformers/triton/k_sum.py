@@ -11,9 +11,12 @@ import triton.language as tl
 @triton.autotune(
     configs=[
         triton.Config({"BLOCK_N": 4}, num_warps=1),
+        triton.Config({"BLOCK_N": 4}, num_warps=4),
         triton.Config({"BLOCK_N": 8}, num_warps=2),
+        triton.Config({"BLOCK_N": 8}, num_warps=4),
         triton.Config({"BLOCK_N": 16}, num_warps=4),
         triton.Config({"BLOCK_N": 32}, num_warps=8),
+        triton.Config({"BLOCK_N": 64}, num_warps=16),
         triton.Config({"BLOCK_N": 64}, num_warps=16),
     ],
     key=["M", "N"],
