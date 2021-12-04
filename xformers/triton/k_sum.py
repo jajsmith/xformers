@@ -15,8 +15,9 @@ import triton.language as tl
         triton.Config({"BLOCK_M": 128, "BLOCK_N": 16}, num_stages=5, num_warps=2),
         triton.Config({"BLOCK_M": 256, "BLOCK_N": 16}, num_stages=5, num_warps=2),
         triton.Config({"BLOCK_M": 512, "BLOCK_N": 16}, num_stages=5, num_warps=2),
-        triton.Config({"BLOCK_M": 1024, "BLOCK_N": 16}, num_stages=5, num_warps=4),
-        triton.Config({"BLOCK_M": 2048, "BLOCK_N": 16}, num_stages=5, num_warps=4),
+        triton.Config({"BLOCK_M": 1024, "BLOCK_N": 8}, num_stages=5, num_warps=2),
+        triton.Config({"BLOCK_M": 2048, "BLOCK_N": 8}, num_stages=5, num_warps=2),
+        triton.Config({"BLOCK_M": 4096, "BLOCK_N": 8}, num_stages=4, num_warps=2),
     ],
     key=["M", "N", "is_fp16"],
 )
@@ -25,7 +26,7 @@ def k_sum_0(
     Y, X,
     stride_xm,
     M, N,
-    is_fp16,  # useful for autotune
+    is_fp16,
     **meta,
 ):
     # fmt: om

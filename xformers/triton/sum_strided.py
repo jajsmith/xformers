@@ -41,7 +41,7 @@ def sum_2d_dim_0(x: torch.Tensor):
         out, x,
         x.stride(0),
         M, N,
-        x.dtype == torch.float16
+        x.dtype == torch.float16,
     )
     # fmt: on
 
