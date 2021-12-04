@@ -10,13 +10,14 @@ import triton.language as tl
 # fmt: off
 @triton.autotune(
     configs=[
-        triton.Config({"BLOCK_M": 32, "BLOCK_N": 16}, num_stages=5, num_warps=1),
-        triton.Config({"BLOCK_M": 64, "BLOCK_N": 16}, num_stages=5, num_warps=2),
-        triton.Config({"BLOCK_M": 128, "BLOCK_N": 16}, num_stages=5, num_warps=2),
-        triton.Config({"BLOCK_M": 256, "BLOCK_N": 16}, num_stages=5, num_warps=2),
-        triton.Config({"BLOCK_M": 512, "BLOCK_N": 16}, num_stages=5, num_warps=2),
-        triton.Config({"BLOCK_M": 1024, "BLOCK_N": 16}, num_stages=5, num_warps=4),
-        triton.Config({"BLOCK_M": 2048, "BLOCK_N": 16}, num_stages=5, num_warps=4),
+        triton.Config({"BLOCK_M": 32,   "BLOCK_N": 32}, num_warps=1),
+        triton.Config({"BLOCK_M": 64,   "BLOCK_N": 32}, num_warps=1),
+        triton.Config({"BLOCK_M": 128,  "BLOCK_N": 16}, num_warps=1),
+        triton.Config({"BLOCK_M": 256,  "BLOCK_N": 8}, num_warps=2),
+        triton.Config({"BLOCK_M": 512,  "BLOCK_N": 8}, num_warps=2),
+        triton.Config({"BLOCK_M": 1024, "BLOCK_N": 8}, num_warps=2),
+        triton.Config({"BLOCK_M": 2048, "BLOCK_N": 8}, num_warps=2),
+        triton.Config({"BLOCK_M": 4096, "BLOCK_N": 8}, num_warps=2),
     ],
     key=["M", "N", "is_fp16"],
 )
@@ -25,7 +26,7 @@ def k_sum_0(
     Y, X,
     stride_xm,
     M, N,
-    is_fp16,  # useful for autotune
+    is_fp16,
     **meta,
 ):
     # fmt: om
@@ -47,14 +48,13 @@ def k_sum_0(
     x_ptrs = X + m[:, None] * stride_xm + rn[None, :]
     x_sum = tl.zeros((BLOCK_N,), dtype=tl.float32)
 
-    tiles = M // BLOCK_M
-    if M % BLOCK_M > 0:
-        tiles += 1
+    tiles = tl.cdiv(M, BLOCK_M)
+    col_mask = (rn[None, :] < N)
 
     for _ in range(tiles):
         # load input data; pad out-of-bounds elements with 0
         # NOTE: make sure to accumulate in fp32 to prevent a trivial overflow
-        mask = (m[:, None] < M) & (rn[None, :] < N)
+        mask = (m[:, None] < M) & col_mask
         x = tl.load(x_ptrs, mask=mask, other=0.0)
         x_sum += tl.sum(x, 0)
 

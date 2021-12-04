@@ -19,54 +19,6 @@ _k_configs = [
 ]
 
 
-def get_depth(*args, **_):
-    return triton.next_power_of_2(args[-1])
-
-
-# autotune: Triton will test out these configurations, and automatically pick the fastest one.
-# heuristic: add arguments to the kernel call automatically given some heuristics. These arguments are passed in "meta"
-# fmt: off
-@triton.autotune(
-    configs=[
-        triton.Config({"BLOCK_N": 1}, num_warps=4),
-        triton.Config({"BLOCK_N": 2}, num_warps=4),
-        triton.Config({"BLOCK_N": 8}, num_warps=4),
-        triton.Config({"BLOCK_N": 1}, num_warps=8),
-        triton.Config({"BLOCK_N": 2}, num_warps=8),
-        triton.Config({"BLOCK_N": 8}, num_warps=8),
-    ],
-    key=["M", "N"],
-)
-@triton.heuristics(values={"depth": get_depth})
-@triton.jit
-def k_sum_0(
-    Y, X,
-    stride_xm,
-    M, N,
-    **meta,  # extra parameters which can be automatically filled in given some heuristics
-):
-    # fmt: om
-
-    """
-    Sum a 2d tensor over the first dimension
-    """
-
-    n = tl.program_id(0)
-
-    # row indices
-    m = tl.arange(0, meta["depth"])
-    rn = n * meta["BLOCK_N"] + tl.arange(0, meta["BLOCK_N"])
-
-    # the memory address of all the elements that we want to load can be computed as follows
-    x_ptrs = X + m[:, None] * stride_xm + rn[None, :]
-
-    # load input data; pad out-of-bounds elements with 0
-    x = tl.load(x_ptrs, mask=(m[:, None] < M) & (rn[None, :] < N), other=0.)
-
-    x_sum = tl.sum(x, 0)
-    tl.store(Y + rn, x_sum, mask=rn < N)
-
-
 @triton.jit
 def _drop_and_scale(SEEDS, row, p, offsets, x):
     # randomly prune the weights
