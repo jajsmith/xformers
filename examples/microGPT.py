@@ -28,7 +28,7 @@ class GPT(pl.LightningModule):
         vocab_size,
         weight_decay=0.1,
         betas=(0.9, 0.95),
-        learning_rate=6e-4,
+        learning_rate=6e-5,
         n_embd=512,
         block_size=128,
         n_layer=8,
@@ -273,7 +273,7 @@ if __name__ == "__main__":
     # Adjust batch depending on the available memory on your machine.
     # You can also use reversible layers to save memory
     REF_BATCH = 512
-    BATCH = 32
+    BATCH = 128
 
     WORKERS = 4
     EPOCHS = 1

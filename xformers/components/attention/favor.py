@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 from torch.cuda.amp import autocast
 
+from xformers import _is_triton_available
 from xformers.components.attention import Attention, AttentionConfig, register_attention
 from xformers.components.attention.feature_maps import (
     FeatureMap,
@@ -20,6 +21,9 @@ from xformers.components.attention.feature_maps import (
     SMOrf,
     SMReg,
 )
+
+if _is_triton_available:
+    from xformers.triton.causal_product import causal_product
 
 
 @dataclass
@@ -49,45 +53,50 @@ def line_multiply(a, b):
 def causal_attention(
     k_prime: torch.Tensor, q_prime: torch.Tensor, v: torch.Tensor
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    if _is_triton_available:
+        att_raw = causal_product(q_prime, k_prime, v)
+        att_norm = causal_product(q_prime, k_prime, torch.ones_like(v))
+        return att_raw, att_norm
 
-    # Cleaner take, but too memory intensive:
-    # Algorithm 1 in the paper
-    ref_v = torch.ones_like(v.unsqueeze(2))  # BATCH x SEQ x 1 x EMB
-    Gps = k_prime.unsqueeze(3) * v.unsqueeze(2)
-    Grenorm = k_prime.unsqueeze(3) * ref_v
+    else:
+        # Cleaner take, but too memory intensive:
+        # Algorithm 1 in the paper
+        ref_v = torch.ones_like(v.unsqueeze(2))  # BATCH x SEQ x 1 x EMB
+        Gps = k_prime.unsqueeze(3) * v.unsqueeze(2)
+        Grenorm = k_prime.unsqueeze(3) * ref_v
 
-    # Consolidate against the feature dimension
-    att_raw = torch.einsum("bcfe,bcf->bce", Gps, q_prime)
-    att_norm = torch.einsum("bcfe,bcf->bce", Grenorm, q_prime)
+        # Consolidate against the feature dimension
+        att_raw = torch.einsum("bcfe,bcf->bce", Gps, q_prime)
+        att_norm = torch.einsum("bcfe,bcf->bce", Grenorm, q_prime)
 
-    # Cumulative sum over the sequence
-    att_raw = att_raw.cumsum(2)
-    att_norm = att_norm.cumsum(2)
+        # Cumulative sum over the sequence
+        att_raw = att_raw.cumsum(2)
+        att_norm = att_norm.cumsum(2)
 
-    # # TODO(@lefaudeux): Rewrite as an optimized Triton kernel ?
-    # See for instance https://github.com/calclavia/Triton-Transformer/blob/master/ttx/attention/causal_product.py
-    # ref_v = torch.ones_like(v[:, 0, :])
+        # # TODO(@lefaudeux): Rewrite as an optimized Triton kernel ?
+        # See for instance https://github.com/calclavia/Triton-Transformer/blob/master/ttx/attention/causal_product.py
+        # ref_v = torch.ones_like(v[:, 0, :])
 
-    # Gps = outer_prod(k_prime[:, 0, :], v[:, 0, :])
-    # Grenorm = outer_prod(k_prime[:, 0, :], ref_v)
+        # Gps = outer_prod(k_prime[:, 0, :], v[:, 0, :])
+        # Grenorm = outer_prod(k_prime[:, 0, :], ref_v)
 
-    # _, M, N = k_prime.shape
-    # att_raw = torch.empty(
-    #     (k_prime.shape[0], M * N),
-    #     device=k_prime.device,
-    #     dtype=k_prime.dtype,
-    # )
-    # att_norm = torch.empty_like(att_raw)
+        # _, M, N = k_prime.shape
+        # att_raw = torch.empty(
+        #     (k_prime.shape[0], M * N),
+        #     device=k_prime.device,
+        #     dtype=k_prime.dtype,
+        # )
+        # att_norm = torch.empty_like(att_raw)
 
-    # for i in range(M):
-    #     start, stop = i * N, (i + 1) * N
-    #     att_raw[:, start:stop] = line_multiply(q_prime[:, i, :], Gps)
-    #     att_norm[:, start:stop] = line_multiply(q_prime[:, i, :], Grenorm)
+        # for i in range(M):
+        #     start, stop = i * N, (i + 1) * N
+        #     att_raw[:, start:stop] = line_multiply(q_prime[:, i, :], Gps)
+        #     att_norm[:, start:stop] = line_multiply(q_prime[:, i, :], Grenorm)
 
-    #     Gps += outer_prod(k_prime[:, i, :], v[:, i, :])
-    #     Grenorm += outer_prod(k_prime[:, i, :], ref_v)
+        #     Gps += outer_prod(k_prime[:, i, :], v[:, i, :])
+        #     Grenorm += outer_prod(k_prime[:, i, :], ref_v)
 
-    return att_raw, att_norm
+        return att_raw, att_norm
 
 
 @register_attention("favor", FavorAttentionConfig)
