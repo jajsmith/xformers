@@ -35,6 +35,61 @@ class FavorAttentionConfig(AttentionConfig):
     feature_map: Optional[FeatureMapType] = None
 
 
+@torch.jit.script
+def outer_prod(a, b):
+    return torch.einsum("be,bf->bef", a, b)
+
+
+@torch.jit.script
+def line_multiply(a, b):
+    return torch.einsum("bf, bfe->be", a, b)
+
+
+# @torch.jit.script
+def causal_attention(
+    k_prime: torch.Tensor, q_prime: torch.Tensor, v: torch.Tensor
+) -> Tuple[torch.Tensor, torch.Tensor]:
+
+    # Cleaner take, but too memory intensive:
+    # Algorithm 1 in the paper
+    ref_v = torch.ones_like(v.unsqueeze(2))  # BATCH x SEQ x 1 x EMB
+    Gps = k_prime.unsqueeze(3) * v.unsqueeze(2)
+    Grenorm = k_prime.unsqueeze(3) * ref_v
+
+    # Consolidate against the feature dimension
+    att_raw = torch.einsum("bcfe,bcf->bce", Gps, q_prime)
+    att_norm = torch.einsum("bcfe,bcf->bce", Grenorm, q_prime)
+
+    # Cumulative sum over the sequence
+    att_raw = att_raw.cumsum(2)
+    att_norm = att_norm.cumsum(2)
+
+    # # TODO(@lefaudeux): Rewrite as an optimized Triton kernel ?
+    # See for instance https://github.com/calclavia/Triton-Transformer/blob/master/ttx/attention/causal_product.py
+    # ref_v = torch.ones_like(v[:, 0, :])
+
+    # Gps = outer_prod(k_prime[:, 0, :], v[:, 0, :])
+    # Grenorm = outer_prod(k_prime[:, 0, :], ref_v)
+
+    # _, M, N = k_prime.shape
+    # att_raw = torch.empty(
+    #     (k_prime.shape[0], M * N),
+    #     device=k_prime.device,
+    #     dtype=k_prime.dtype,
+    # )
+    # att_norm = torch.empty_like(att_raw)
+
+    # for i in range(M):
+    #     start, stop = i * N, (i + 1) * N
+    #     att_raw[:, start:stop] = line_multiply(q_prime[:, i, :], Gps)
+    #     att_norm[:, start:stop] = line_multiply(q_prime[:, i, :], Grenorm)
+
+    #     Gps += outer_prod(k_prime[:, i, :], v[:, i, :])
+    #     Grenorm += outer_prod(k_prime[:, i, :], ref_v)
+
+    return att_raw, att_norm
+
+
 @register_attention("favor", FavorAttentionConfig)
 class FavorAttention(Attention):
     def __init__(
@@ -106,25 +161,6 @@ class FavorAttention(Attention):
         # Only promote fp16 buffers, bfloat16 would be fine for instance
         return x.float() if x.dtype == torch.float16 else x
 
-    @staticmethod
-    def _causal_attention(
-        k_prime: torch.Tensor, q_prime: torch.Tensor, v: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        # Algorithm 1 in the paper
-        ref_v = torch.ones_like(v.unsqueeze(2))  # BATCH x SEQ x 1 x EMB
-        Gps = k_prime.unsqueeze(3) * v.unsqueeze(2)
-        Grenorm = k_prime.unsqueeze(3) * ref_v
-
-        # Consolidate against the feature dimension
-        att_raw = torch.einsum("bcfe,bcf->bce", Gps, q_prime)
-        att_norm = torch.einsum("bcfe,bcf->bce", Grenorm, q_prime)
-
-        # Cumulative sum over the sequence
-        att_raw = att_raw.cumsum(2)
-        att_norm = att_norm.cumsum(2)
-
-        return att_raw, att_norm
-
     def forward(
         self,
         q: torch.Tensor,
@@ -153,7 +189,7 @@ class FavorAttention(Attention):
                 att_raw = q_prime @ (k_prime.transpose(-2, -1) @ v)
             else:
                 # Actually compute attention
-                att_raw, att_normalization = self._causal_attention(k_prime, q_prime, v)
+                att_raw, att_normalization = causal_attention(k_prime, q_prime, v)
 
             # Normalize
             att = att_raw / att_normalization
