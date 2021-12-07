@@ -30,30 +30,24 @@ class _dropout(torch.autograd.Function):
         # Soft-flatten an hypothetical 3rd dimension
         x_ = x.reshape(-1, x.shape[-1]).contiguous()
         y = torch.empty_like(x_)
-        _, N = x_.shape
+        M, N = x_.shape
 
         assert bias is None or bias.dtype == x.dtype, bias
 
         # Generate one seed per sample
         # seed max is int32 max for positive numbers: 2**16
-        seeds = torch.randint(65536, (x_.shape[0],), device=x.device).to(torch.int32)
-
-        # SPMD launch grid
-        def grid(meta):
-            return (
-                x_.shape[0],
-                triton.cdiv(x_.shape[1], meta["BLOCK_SIZE"]),
-            )
+        seeds = torch.randint(65536, (M,), device=x.device).to(torch.int32)
 
         # fmt: off
-        k_dropout_fw[grid](
+        k_dropout_fw[(M,)](
             y, x_, bias if bias is not None else x_,
             seeds,
             y.stride(0),
             N,
             p,
             USE_BIAS=bias is not None,
-            ACTIVATION=activation
+            ACTIVATION=activation,
+            BLOCK_SIZE=triton.next_power_of_2(N)
         )
         # fmt: on
 

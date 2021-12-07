@@ -83,7 +83,13 @@ def _drop_and_scale(SEEDS, row, p, offsets, x):
 
 # fmt: off
 @triton.autotune(
-    configs=_k_configs,
+    configs=[
+        triton.Config({}, num_warps=1),
+        triton.Config({}, num_warps=2),
+        triton.Config({}, num_warps=4),
+        triton.Config({}, num_warps=8),
+        triton.Config({}, num_warps=16)
+    ],
     key=["N"],
 )
 @triton.jit
@@ -105,11 +111,11 @@ def k_dropout_fw(
 
     BLOCK_SIZE = META["BLOCK_SIZE"]
     row = tl.program_id(axis=0)
-    col = tl.program_id(axis=1)
+    rn = tl.arange(0, BLOCK_SIZE)
 
     # compute memory offsets of elements handled by this instance
-    offsets = row * stride + col * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    mask = col * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE) < N
+    offsets = row * stride + rn
+    mask = rn < N
 
     # load data from x
     x_ptrs = X + offsets
@@ -117,7 +123,7 @@ def k_dropout_fw(
 
     # optionally apply a fused bias
     if META["USE_BIAS"]:
-        b_ptrs = BIAS + col * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        b_ptrs = BIAS + rn
         b = tl.load(b_ptrs, mask=mask)
         x += b
 
