@@ -10,26 +10,17 @@
 import triton
 import triton.language as tl
 
+# WARNING: For now, the number of threads must be the same as the N buffer, and warps have to be 4 (will be fixed)
 k_configs = [
-    triton.Config({"BLOCK_N": 16}),
-    triton.Config({"BLOCK_N": 32}),
-    triton.Config({"BLOCK_N": 64}),
+    triton.Config({"BLOCK_M": 64, "BLOCK_N": 128}, num_warps=4),
+    triton.Config({"BLOCK_M": 128, "BLOCK_N": 128}, num_warps=4),
+    triton.Config({"BLOCK_M": 256, "BLOCK_N": 128}, num_warps=4),
+    triton.Config({"BLOCK_M": 512, "BLOCK_N": 128}, num_warps=4),
 ]
-
-MAX_BLOCK_M = 512
-
-
-def get_block_m(*args, **_):
-    return min(triton.next_power_of_2(args[-3]), MAX_BLOCK_M)
-
-
-def get_size_block(*args, **meta):
-    block_m = get_block_m(*args, **meta)
-    return block_m * meta["BLOCK_N"]
 
 
 # fmt: off
-@triton.heuristics({"BLOCK_M": get_block_m, "SIZE_BLOCK": get_size_block})
+@triton.heuristics({"SIZE_RAND_BLOCK": lambda *_, **meta: meta["BLOCK_N"] * meta["BLOCK_M"]})
 @triton.autotune(
     configs=k_configs,
     key=["M", "N"],
@@ -54,19 +45,21 @@ def k_dropout_fw(
 
     BLOCK_M = meta["BLOCK_M"]
     BLOCK_N = meta["BLOCK_N"]
-    SIZE_BLOCK = meta["SIZE_BLOCK"]
+    SIZE_RAND_BLOCK = meta["SIZE_RAND_BLOCK"]
 
-    rows = tl.arange(0, BLOCK_M)
-    col_id = tl.program_id(axis=0)
+    row_id = tl.program_id(axis=0)
+    rows = row_id * BLOCK_M * 4 + tl.arange(0, BLOCK_M)
+
+    col_id = tl.program_id(axis=1)
     cols = col_id * BLOCK_N + tl.arange(0, BLOCK_N)
-    seed = SEEDS + col_id
+    seed = SEEDS + col_id  # FIXME index the seed properly
 
     # pointers starting point
     x_ptrs = X + rows[:, None] * stride + cols[None, :]
     y_ptrs = Y + rows[:, None] * stride + cols[None, :]
 
     # go over all the tiles, one by one
-    rand_offsets = tl.arange(0, SIZE_BLOCK)
+    rand_offsets = tl.arange(0, SIZE_RAND_BLOCK) + row_id * BLOCK_M * 4
     rand1, rand2, rand3, rand4 = tl.randint4x(seed.to(tl.int32), rand_offsets)
     threshold = ((p - 0.5) * 2147483648.).to(tl.int32)
 
@@ -75,7 +68,6 @@ def k_dropout_fw(
     rand_mask2 = rand2 > threshold
     rand_mask3 = rand3 > threshold
     rand_mask4 = rand4 > threshold
-    rand_mask = rand_mask1
 
     col_mask = cols[None, :] < N
     p_scale = 1 / (1 - p) if p < 1. else 1.
@@ -85,9 +77,17 @@ def k_dropout_fw(
         b_ptrs = BIAS + cols[None, :]
         bias = tl.load(b_ptrs, mask=cols[None, :] < N, other=0.)
 
-    i = 0
-    tiles = tl.cdiv(M, BLOCK_M)
-    for _ in range(tiles):
+    for i in range(4):
+        # cycle through the binary masks (workaround / no indexing)
+        if i == 0:
+            rand_mask = rand_mask1
+        elif i == 1:
+            rand_mask = rand_mask2
+        elif i == 2:
+            rand_mask = rand_mask3
+        else:
+            rand_mask = rand_mask4
+
         block_mask = (rows[:, None] < M) & col_mask
         x = tl.load(x_ptrs, mask=block_mask, other=0.)
 
@@ -116,24 +116,9 @@ def k_dropout_fw(
         x_ptrs += BLOCK_M * stride
         y_ptrs += BLOCK_M * stride
 
-        # update the seed offset
-        rand_offsets += SIZE_BLOCK
-
-        # cycle through the binary masks
-        if i == 0:
-            rand_mask = rand_mask2
-        elif i == 1:
-            rand_mask = rand_mask3
-        elif i == 2:
-            rand_mask = rand_mask4
-        else:
-            rand_mask = rand_mask1
-
-        i = (i + 1) % 4
-
 
 # fmt: off
-@triton.heuristics({"BLOCK_M": get_block_m, "SIZE_BLOCK": get_size_block})
+@triton.heuristics({"SIZE_RAND_BLOCK": lambda *_, **meta: meta["BLOCK_N"] * meta["BLOCK_M"]})
 @triton.autotune(
     configs=k_configs,
     key=["M", "N"],
@@ -160,13 +145,16 @@ def k_dropout_bw(
 
     BLOCK_M = meta["BLOCK_M"]
     BLOCK_N = meta["BLOCK_N"]
-    SIZE_BLOCK = meta["SIZE_BLOCK"]
+    SIZE_RAND_BLOCK = meta["SIZE_RAND_BLOCK"]
     TRAINABLE_BIAS = meta["TRAINABLE_BIAS"]
 
     rows = tl.arange(0, BLOCK_M)
-    col_id = tl.program_id(axis=0)
+    row_id = tl.program_id(axis=0)
+    rows = row_id * BLOCK_M * 4 + tl.arange(0, BLOCK_M)
+
+    col_id = tl.program_id(axis=1)
     cols = col_id * BLOCK_N + tl.arange(0, BLOCK_N)
-    seed = SEEDS + col_id
+    seed = SEEDS + col_id  # FIXME index the seed properly
 
     # pointers starting point
     grad_out_ptrs = GRAD_OUT + rows[:, None] * stride_grad + cols[None, :]
@@ -174,7 +162,7 @@ def k_dropout_bw(
     input_ptrs = INPUTS + rows[:, None] * stride_inputs + cols[None, :]
 
     # random binary masks, save registers
-    rand_offsets = tl.arange(0, SIZE_BLOCK)
+    rand_offsets = tl.arange(0, SIZE_RAND_BLOCK) + row_id * BLOCK_M * 4
     rand1, rand2, rand3, rand4 = tl.randint4x(seed.to(tl.int32), rand_offsets)
     threshold = ((p - 0.5) * 2147483648.).to(tl.int32)
 
@@ -194,10 +182,17 @@ def k_dropout_bw(
         b_ptrs = BIAS + cols[None, :]
         bias = tl.load(b_ptrs, mask=col_mask, other=0.)
 
-    i = 0
+    for i in range(4):
+        # cycle through the binary masks (workaround / no indexing)
+        if i == 0:
+            rand_mask = rand_mask1
+        elif i == 1:
+            rand_mask = rand_mask2
+        elif i == 2:
+            rand_mask = rand_mask3
+        else:
+            rand_mask = rand_mask4
 
-    tiles = tl.cdiv(M, BLOCK_M)
-    for _ in range(tiles):
         block_mask = (rows[:, None] < M) & col_mask
         grad_out = tl.load(grad_out_ptrs, mask=block_mask, other=0.)
 
@@ -239,9 +234,6 @@ def k_dropout_bw(
         input_ptrs += BLOCK_M * stride_inputs
         grad_in_ptrs += BLOCK_M * stride_grad
 
-        # update the seed offset
-        rand_offsets += SIZE_BLOCK
-
         # cycle through the binary masks
         if i == 0:
             rand_mask = rand_mask2
@@ -252,8 +244,7 @@ def k_dropout_bw(
         else:
             rand_mask = rand_mask1
 
-        i = (i + 1) % 4
-
     if TRAINABLE_BIAS:
+        # WARNING: Non determinist ?
         grad_bias_ptr = GRAD_BIAS + cols
-        tl.store(grad_bias_ptr, grad_bias, mask=cols < N)
+        tl.atomic_add(grad_bias_ptr, grad_bias / 4., mask=cols < N)  # FIXME: We should not need /4 here.

@@ -35,10 +35,14 @@ class _dropout(torch.autograd.Function):
 
         # Generate one seed per sample
         # seed max is int32 max for positive numbers: 2**16
+        # FIXME: adjust the number of seeds needed
         seeds = torch.randint(65536, (N,), device=x.device).to(torch.int32)
 
         def grid(meta):
-            return (triton.cdiv(N, meta["BLOCK_N"]),)
+            return (
+                triton.cdiv(M, meta["BLOCK_M"] * 4),
+                triton.cdiv(N, meta["BLOCK_N"]),
+            )
 
         # fmt: off
         k_dropout_fw[grid](
@@ -84,12 +88,15 @@ class _dropout(torch.autograd.Function):
             inputs = inputs.reshape(-1, N)
 
         if ctx.trainable_bias:
-            grad_bias = torch.empty((N,), device=grad_in.device, dtype=grad_in.dtype)
+            grad_bias = torch.zeros((N,), device=grad_in.device, dtype=grad_in.dtype)
         else:
             grad_bias = grad_in  # will not be used
 
         def grid(meta):
-            return (triton.cdiv(N, meta["BLOCK_N"]),)
+            return (
+                triton.cdiv(M, meta["BLOCK_M"] * 4),
+                triton.cdiv(N, meta["BLOCK_N"]),
+            )
 
         # fmt: off
         k_dropout_bw[grid](
