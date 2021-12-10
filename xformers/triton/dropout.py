@@ -88,9 +88,11 @@ class _dropout(torch.autograd.Function):
             inputs = inputs.reshape(-1, N)
 
         if ctx.trainable_bias:
-            grad_bias = torch.zeros((N,), device=grad_in.device, dtype=grad_in.dtype)
+            grad_bias = torch.empty((N,), device=grad_in.device, dtype=grad_in.dtype)
+            locks = torch.zeros(N // 2, dtype=torch.int32, device=grad_in.device)
         else:
             grad_bias = grad_in  # will not be used
+            locks = grad_in
 
         def grid(meta):
             return (
@@ -102,7 +104,7 @@ class _dropout(torch.autograd.Function):
         k_dropout_bw[grid](
             grad_in, grad_bias, grad_out_,
             inputs, bias if bias is not None else inputs,
-            seeds,
+            seeds, locks,
             grad_out_.stride(0), inputs.stride(0),
             M, N,
             ctx.p,
