@@ -44,6 +44,9 @@ class _dropout(torch.autograd.Function):
                 triton.cdiv(N, meta["BLOCK_N"]),
             )
 
+        GROUP_M = 128
+        BLOCK_M = GROUP_M // 4
+
         # fmt: off
         k_dropout_fw[grid](
             y, x_,
@@ -53,7 +56,8 @@ class _dropout(torch.autograd.Function):
             M, N,
             p,
             USE_BIAS=bias is not None,
-            ACTIVATION=activation
+            ACTIVATION=activation,
+            BLOCK_M=BLOCK_M
         )
         # fmt: on
 
@@ -87,12 +91,21 @@ class _dropout(torch.autograd.Function):
         elif inputs.ndim > 2:
             inputs = inputs.reshape(-1, N)
 
+        GROUP_M = 128
+        BLOCK_M = GROUP_M // 4
+        N_BLOCKS_M = triton.cdiv(M, GROUP_M)
+
         if ctx.trainable_bias:
-            grad_bias = torch.empty((N,), device=grad_in.device, dtype=grad_in.dtype)
-            locks = torch.zeros(N // 2, dtype=torch.int32, device=grad_in.device)
+            grad_bias = torch.empty(
+                (
+                    N_BLOCKS_M,
+                    N,
+                ),
+                device=grad_in.device,
+                dtype=grad_in.dtype,
+            )
         else:
             grad_bias = grad_in  # will not be used
-            locks = grad_in
 
         def grid(meta):
             return (
@@ -104,20 +117,21 @@ class _dropout(torch.autograd.Function):
         k_dropout_bw[grid](
             grad_in, grad_bias, grad_out_,
             inputs, bias if bias is not None else inputs,
-            seeds, locks,
+            seeds,
             grad_out_.stride(0), inputs.stride(0),
             M, N,
             ctx.p,
             USE_BIAS=bias is not None,
             ACTIVATION_GRAD=ctx.activation_grad,
-            TRAINABLE_BIAS=ctx.trainable_bias
+            TRAINABLE_BIAS=ctx.trainable_bias,
+            BLOCK_M=BLOCK_M
         )
         # fmt: on
 
         return (
             grad_in.reshape_as(grad_out),
             None,
-            grad_bias if ctx.trainable_bias else None,
+            grad_bias.sum(dim=0) if ctx.trainable_bias else None,
             None,
             None,
             None,

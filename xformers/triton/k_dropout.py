@@ -10,17 +10,11 @@
 import triton
 import triton.language as tl
 
-# WARNING: For now, the number of threads must be the same as the N buffer, and warps have to be 4 (will be fixed)
 k_configs = [
-    triton.Config({"BLOCK_M": 64, "BLOCK_N": 32}, num_warps=1),
-    triton.Config({"BLOCK_M": 128, "BLOCK_N": 32}, num_warps=1),
-    triton.Config({"BLOCK_M": 256, "BLOCK_N": 32}, num_warps=1),
-    triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=2),
-    triton.Config({"BLOCK_M": 128, "BLOCK_N": 64}, num_warps=2),
-    triton.Config({"BLOCK_M": 256, "BLOCK_N": 64}, num_warps=2),
-    triton.Config({"BLOCK_M": 64, "BLOCK_N": 128}, num_warps=4),
-    triton.Config({"BLOCK_M": 128, "BLOCK_N": 128}, num_warps=4),
-    triton.Config({"BLOCK_M": 256, "BLOCK_N": 128}, num_warps=4),
+    triton.Config({"BLOCK_N": 32}, num_warps=1),
+    triton.Config({"BLOCK_N": 64}, num_warps=2),
+    triton.Config({"BLOCK_N": 128}, num_warps=4),
+    triton.Config({"BLOCK_N": 256}, num_warps=8),
 ]
 
 
@@ -131,7 +125,7 @@ def k_dropout_fw(
 @triton.jit
 def k_dropout_bw(
     GRAD_IN, GRAD_BIAS, GRAD_OUT,
-    INPUTS, BIAS, SEEDS, LOCKS,
+    INPUTS, BIAS, SEEDS,
     stride_grad, stride_inputs,
     M, N,
     p,
@@ -250,23 +244,5 @@ def k_dropout_bw(
             rand_mask = rand_mask1
 
     if TRAINABLE_BIAS:
-        lock_ptr = LOCKS + 2 * col_id
-        count_ptr = LOCKS + 2 * col_id + 1
-        grad_bias_ptr = GRAD_BIAS + cols
-
-        # Uniquely taking a lock over the col results
-        while tl.atomic_cas(lock_ptr, 0, 1) == 1:
-            pass
-
-        count = tl.load(count_ptr)
-        if count == 0:
-            # first store doesn't accumulate
-            tl.atomic_xchg(count_ptr, 1)
-        else:
-            # read and add back
-            grad_bias += tl.load(grad_bias_ptr, mask=cols < N)
-
+        grad_bias_ptr = GRAD_BIAS + row_id * N + cols
         tl.store(grad_bias_ptr, grad_bias, mask=cols < N)
-
-        # release lock
-        tl.atomic_xchg(lock_ptr, 0)
